@@ -1,0 +1,410 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Генератор синтетичного датасету: артилерійські обстріли</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 20px; line-height: 1.35; }
+    h1 { font-size: 18px; margin: 0 0 10px; }
+    .grid { display: grid; grid-template-columns: repeat(6, minmax(140px, 1fr)); gap: 10px; align-items: end; }
+    label { font-size: 12px; color: #333; display: block; margin-bottom: 4px; }
+    input, select, button, textarea { width: 100%; padding: 8px; box-sizing: border-box; }
+    button { cursor: pointer; }
+    .row { display: flex; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
+    .row > * { flex: 1 1 180px; }
+    .muted { color: #666; font-size: 12px; margin-top: 8px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 12px; }
+    th, td { border: 1px solid #ddd; padding: 6px; vertical-align: top; }
+    th { background: #f7f7f7; text-align: left; }
+    .panel { border: 1px solid #ddd; padding: 12px; border-radius: 10px; }
+    textarea { height: 140px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+    @media (max-width: 1050px) { .grid { grid-template-columns: repeat(2, minmax(160px, 1fr)); } }
+  </style>
+</head>
+<body>
+  <h1>Генератор синтетичного датасету: артилерійські обстріли позицій (вигадані дані)</h1>
+
+  <div class="panel">
+    <div class="grid">
+      <div>
+        <label>Кількість записів (N)</label>
+        <input id="n" type="number" min="1" value="500" />
+      </div>
+
+      <div>
+        <label>Кількість батальйонів</label>
+        <input id="bCount" type="number" min="1" value="4" />
+      </div>
+
+      <div>
+        <label>Префікс батальйону</label>
+        <input id="bPrefix" type="text" value="BN" />
+      </div>
+
+      <div>
+        <label>Дата/час початку</label>
+        <input id="start" type="datetime-local" />
+      </div>
+
+      <div>
+        <label>Дата/час кінця</label>
+        <input id="end" type="datetime-local" />
+      </div>
+
+      <div>
+        <label>Seed (для відтворюваності)</label>
+        <input id="seed" type="text" value="20260123" />
+      </div>
+
+      <div>
+        <label>Калібр (caliber /ˈkælɪbər/)</label>
+        <select id="caliber">
+          <option value="mixed" selected>Змішаний</option>
+          <option value="122">122 мм</option>
+          <option value="152">152 мм</option>
+          <option value="155">155 мм</option>
+          <option value="120">120 мм (міномет)</option>
+        </select>
+      </div>
+
+      <div>
+        <label>Тип боєприпасу</label>
+        <select id="munition">
+          <option value="mixed" selected>Змішаний</option>
+          <option value="HE">ОФ (HE)</option>
+          <option value="SMOKE">Димовий</option>
+          <option value="ILLUM">Освітлювальний</option>
+          <option value="CLUSTER">Касетний (умовно)</option>
+        </select>
+      </div>
+
+      <div>
+        <label>Інтенсивність (середня к-ть снарядів)</label>
+        <input id="meanRounds" type="number" min="1" value="18" />
+      </div>
+
+      <div>
+        <label>Ймовірність контрбатарейної відповіді</label>
+        <input id="pCounter" type="number" min="0" max="1" step="0.01" value="0.28" />
+      </div>
+
+      <div>
+        <label>Ймовірність втрат (умовна)</label>
+        <input id="pCasual" type="number" min="0" max="1" step="0.01" value="0.12" />
+      </div>
+
+      <div>
+        <label>Прев’ю рядків</label>
+        <input id="previewN" type="number" min="5" value="25" />
+      </div>
+    </div>
+
+    <div class="row">
+      <button id="btnGen">Згенерувати</button>
+      <button id="btnCsv" disabled>Завантажити CSV</button>
+      <button id="btnJson" disabled>Завантажити JSON</button>
+      <button id="btnCopy" disabled>Скопіювати JSON у буфер</button>
+    </div>
+
+    <div class="muted">
+      Примітка: “позиції” та “сектори” тут умовні (без реальних координат). Можеш легко замінити генератор “gridRef” на свою систему позначень.
+    </div>
+  </div>
+
+  <div class="panel" style="margin-top: 12px;">
+    <strong>JSON (фрагмент/повністю):</strong>
+    <textarea id="out" placeholder="Натисни “Згенерувати”..."></textarea>
+  </div>
+
+  <div class="panel" style="margin-top: 12px;">
+    <strong>Прев’ю таблиці:</strong>
+    <div style="overflow:auto;">
+      <table id="tbl"></table>
+    </div>
+  </div>
+
+<script>
+/** ====== Seeded RNG: Mulberry32 ====== */
+function xmur3(str) {
+  let h = 1779033703 ^ str.length;
+  for (let i = 0; i < str.length; i++) {
+    h = Math.imul(h ^ str.charCodeAt(i), 3432918353);
+    h = (h << 13) | (h >>> 19);
+  }
+  return function() {
+    h = Math.imul(h ^ (h >>> 16), 2246822507);
+    h = Math.imul(h ^ (h >>> 13), 3266489909);
+    return (h ^= h >>> 16) >>> 0;
+  };
+}
+function mulberry32(a) {
+  return function() {
+    let t = a += 0x6D2B79F5;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function makeRng(seedStr) {
+  const seedFn = xmur3(String(seedStr));
+  return mulberry32(seedFn());
+}
+function rInt(rng, min, maxInclusive) {
+  return Math.floor(rng() * (maxInclusive - min + 1)) + min;
+}
+function pick(rng, arr) {
+  return arr[Math.floor(rng() * arr.length)];
+}
+
+/** ====== Helpers ====== */
+function clamp(x, a, b){ return Math.max(a, Math.min(b, x)); }
+
+function poissonLike(rng, mean) {
+  // Простий швидкий генератор "приблизно пуассонівського" розподілу:
+  // сумуємо 12 рівномірних (ЦГТ) для наближення нормального і обрізаємо
+  let s = 0;
+  for (let i = 0; i < 12; i++) s += rng();
+  const z = s - 6; // ~N(0,1)
+  const val = Math.round(mean + z * Math.sqrt(mean));
+  return Math.max(0, val);
+}
+
+function toIsoNoMs(d) {
+  const pad = n => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}Z`;
+}
+
+function downloadText(filename, text) {
+  const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function toCsv(rows) {
+  const cols = Object.keys(rows[0] || {});
+  const esc = (v) => {
+    if (v === null || v === undefined) return "";
+    const s = String(v);
+    if (/[",\n]/.test(s)) return `"${s.replaceAll('"','""')}"`;
+    return s;
+  };
+  const head = cols.join(",");
+  const body = rows.map(r => cols.map(c => esc(r[c])).join(",")).join("\n");
+  return head + "\n" + body;
+}
+
+function setDefaultDates() {
+  const now = new Date();
+  const end = new Date(now.getTime());
+  const start = new Date(now.getTime() - 7 * 24 * 3600 * 1000);
+
+  const toLocalInput = (d) => {
+    // datetime-local expects local without Z
+    const pad = n => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  };
+
+  document.getElementById("start").value = toLocalInput(start);
+  document.getElementById("end").value = toLocalInput(end);
+}
+
+function parseLocalDateTime(val) {
+  // val like "2026-01-23T10:30"
+  const d = new Date(val);
+  if (Number.isNaN(d.getTime())) return null;
+  return d;
+}
+
+/** ====== Domain generators (fictional) ====== */
+function genGridRef(rng) {
+  // Умовна сітка: сектор [A-H], квадрат [01-30], підквадрат [1-9]
+  const sector = String.fromCharCode("A".charCodeAt(0) + rInt(rng, 0, 7));
+  const square = String(rInt(rng, 1, 30)).padStart(2, "0");
+  const sub = rInt(rng, 1, 9);
+  return `${sector}${square}-${sub}`;
+}
+
+function genDirection(rng) {
+  return pick(rng, ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]);
+}
+
+function genWeather(rng) {
+  return pick(rng, ["clear", "cloudy", "fog", "rain", "snow", "windy"]);
+}
+
+function damageLevel(rng, rounds, caliber) {
+  // Умовна шкала 0..4
+  const c = Number(caliber) || 130;
+  const energy = rounds * (c / 130);
+  let lvl = 0;
+  if (energy > 10) lvl = 1;
+  if (energy > 25) lvl = 2;
+  if (energy > 45) lvl = 3;
+  if (energy > 70) lvl = 4;
+  // трошки випадковості
+  lvl += (rng() < 0.10 ? -1 : 0) + (rng() < 0.10 ? 1 : 0);
+  return clamp(lvl, 0, 4);
+}
+
+function genCaliber(rng, mode) {
+  if (mode !== "mixed") return mode;
+  return pick(rng, ["122", "152", "155", "120"]);
+}
+
+function genMunition(rng, mode) {
+  if (mode !== "mixed") return mode;
+  // ваги: HE найчастіше
+  const x = rng();
+  if (x < 0.68) return "HE";
+  if (x < 0.80) return "SMOKE";
+  if (x < 0.92) return "ILLUM";
+  return "CLUSTER";
+}
+
+/** ====== Main ====== */
+let lastData = [];
+
+function renderTable(rows, n) {
+  const tbl = document.getElementById("tbl");
+  tbl.innerHTML = "";
+  if (!rows.length) return;
+
+  const cols = Object.keys(rows[0]);
+  const thead = document.createElement("thead");
+  const trh = document.createElement("tr");
+  cols.forEach(c => {
+    const th = document.createElement("th");
+    th.textContent = c;
+    trh.appendChild(th);
+  });
+  thead.appendChild(trh);
+  tbl.appendChild(thead);
+
+  const tbody = document.createElement("tbody");
+  rows.slice(0, n).forEach(r => {
+    const tr = document.createElement("tr");
+    cols.forEach(c => {
+      const td = document.createElement("td");
+      td.textContent = r[c];
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  });
+  tbl.appendChild(tbody);
+}
+
+function genData() {
+  const N = Math.max(1, Number(document.getElementById("n").value || 1));
+  const bCount = Math.max(1, Number(document.getElementById("bCount").value || 1));
+  const bPrefix = (document.getElementById("bPrefix").value || "BN").trim();
+  const seedStr = document.getElementById("seed").value || "seed";
+  const meanRounds = Math.max(1, Number(document.getElementById("meanRounds").value || 10));
+  const pCounter = clamp(Number(document.getElementById("pCounter").value || 0.2), 0, 1);
+  const pCasual = clamp(Number(document.getElementById("pCasual").value || 0.1), 0, 1);
+
+  const startVal = document.getElementById("start").value;
+  const endVal = document.getElementById("end").value;
+  const start = parseLocalDateTime(startVal) || new Date(Date.now() - 7*24*3600*1000);
+  const end = parseLocalDateTime(endVal) || new Date();
+
+  const calMode = document.getElementById("caliber").value;
+  const munMode = document.getElementById("munition").value;
+
+  const rng = makeRng(seedStr);
+
+  // батальйони
+  const battalions = Array.from({length: bCount}, (_, i) => `${bPrefix}-${String(i+1).padStart(2,"0")}`);
+
+  const startMs = start.getTime();
+  const endMs = Math.max(startMs + 1000, end.getTime());
+  const span = endMs - startMs;
+
+  const out = [];
+  for (let i = 0; i < N; i++) {
+    const t = new Date(startMs + Math.floor(rng() * span));
+    const battalion_id = pick(rng, battalions);
+
+    const caliber = genCaliber(rng, calMode);
+    const munition_type = genMunition(rng, munMode);
+
+    const rounds = poissonLike(rng, meanRounds);
+    const gridRef = genGridRef(rng);
+
+    const dmg = damageLevel(rng, rounds, caliber);
+
+    const counterbattery = (rng() < pCounter) ? "yes" : "no";
+
+    // умовні втрати: базово 0, з імовірністю pCasual зростає із рівнем ушкоджень
+    let casualties_est = 0;
+    if (rng() < pCasual) {
+      casualties_est = Math.max(0, Math.round((dmg * (0.5 + rng())) * 2)); // 0..~8
+    }
+
+    const record = {
+      event_id: `EV-${String(i+1).padStart(6,"0")}`,
+      datetime_utc: toIsoNoMs(t),
+      battalion_id,
+      position_ref: gridRef,        // умовне позначення позиції
+      direction: genDirection(rng),  // умовний напрямок
+      rounds,
+      caliber_mm: caliber,
+      munition_type,
+      damage_level_0_4: dmg,
+      casualties_est,
+      counterbattery,
+      weather: genWeather(rng),
+      note: (rng() < 0.08) ? "comms degraded" : ""
+    };
+
+    out.push(record);
+  }
+
+  lastData = out;
+
+  const previewN = Math.max(5, Number(document.getElementById("previewN").value || 25));
+  renderTable(out, previewN);
+
+  const outBox = document.getElementById("out");
+  outBox.value = JSON.stringify(out.slice(0, Math.min(50, out.length)), null, 2) +
+    (out.length > 50 ? `\n\n// ... (показано 50 з ${out.length}). Для повного JSON натисни "Завантажити JSON".` : "");
+
+  document.getElementById("btnCsv").disabled = out.length === 0;
+  document.getElementById("btnJson").disabled = out.length === 0;
+  document.getElementById("btnCopy").disabled = out.length === 0;
+}
+
+document.getElementById("btnGen").addEventListener("click", genData);
+
+document.getElementById("btnCsv").addEventListener("click", () => {
+  if (!lastData.length) return;
+  const csv = toCsv(lastData);
+  downloadText(`artillery_shelling_dataset_${lastData.length}.csv`, csv);
+});
+
+document.getElementById("btnJson").addEventListener("click", () => {
+  if (!lastData.length) return;
+  const json = JSON.stringify(lastData, null, 2);
+  downloadText(`artillery_shelling_dataset_${lastData.length}.json`, json);
+});
+
+document.getElementById("btnCopy").addEventListener("click", async () => {
+  if (!lastData.length) return;
+  try {
+    await navigator.clipboard.writeText(JSON.stringify(lastData, null, 2));
+    alert("JSON скопійовано в буфер обміну.");
+  } catch (e) {
+    alert("Не вдалося скопіювати. Спробуй вручну з поля JSON.");
+  }
+});
+
+setDefaultDates();
+</script>
+</body>
+</html>
